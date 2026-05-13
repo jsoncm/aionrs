@@ -151,15 +151,25 @@ impl OpenAIProvider {
                         .content
                         .iter()
                         .filter_map(|b| {
-                            if let ContentBlock::ToolUse { id, name, input } = b {
-                                Some(json!({
+                            if let ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input,
+                                extra,
+                            } = b
+                            {
+                                let mut tc_json = json!({
                                     "id": id,
                                     "type": "function",
                                     "function": {
                                         "name": name,
                                         "arguments": serde_json::to_string(input).unwrap_or_default()
                                     }
-                                }))
+                                });
+                                if let Some(extra_val) = extra {
+                                    tc_json["extra_content"] = extra_val.clone();
+                                }
+                                Some(tc_json)
                             } else {
                                 None
                             }
@@ -420,6 +430,7 @@ struct ToolCallAccumulator {
     id: String,
     name: String,
     arguments: String,
+    extra: Option<Value>,
 }
 
 struct StreamState {
@@ -468,6 +479,7 @@ impl StreamState {
                 id: String::new(),
                 name: String::new(),
                 arguments: String::new(),
+                extra: None,
             });
         }
         &mut self.tool_calls[index]
@@ -632,6 +644,9 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState) -> Vec<LlmEvent> {
             if let Some(args) = tc["function"]["arguments"].as_str() {
                 acc.arguments.push_str(args);
             }
+            if let Some(extra) = tc.get("extra_content").filter(|v| !v.is_null()) {
+                acc.extra = Some(extra.clone());
+            }
         }
     }
 
@@ -639,27 +654,37 @@ fn parse_sse_chunk(data: &str, state: &mut StreamState) -> Vec<LlmEvent> {
     // chunk (choices:[]) can update token counts first.
     if let Some(finish_reason) = choice["finish_reason"].as_str() {
         match finish_reason {
-            "tool_calls" => {
-                // Emit accumulated tool calls immediately.
-                for tc in state.tool_calls.drain(..) {
-                    let input: Value = serde_json::from_str(&tc.arguments)
-                        .unwrap_or(Value::Object(serde_json::Map::new()));
-                    events.push(LlmEvent::ToolUse {
-                        id: tc.id,
-                        name: tc.name,
-                        input,
+            "tool_calls" | "stop" => {
+                if !state.tool_calls.is_empty() {
+                    // Emit accumulated tool calls. Gemini uses "stop" instead of
+                    // "tool_calls" as finish_reason, so we handle both here.
+                    for tc in state.tool_calls.drain(..) {
+                        let input: Value = serde_json::from_str(&tc.arguments)
+                            .unwrap_or(Value::Object(serde_json::Map::new()));
+                        events.push(LlmEvent::ToolUse {
+                            id: tc.id,
+                            name: tc.name,
+                            input,
+                            extra: tc.extra,
+                        });
+                    }
+                    state.pending_done = Some(LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage::default(),
+                    });
+                } else if finish_reason == "stop" {
+                    state.pending_done = Some(LlmEvent::Done {
+                        stop_reason: StopReason::EndTurn,
+                        usage: TokenUsage::default(),
+                    });
+                } else {
+                    // "tool_calls" with empty accumulator — shouldn't happen,
+                    // but treat as ToolUse for safety.
+                    state.pending_done = Some(LlmEvent::Done {
+                        stop_reason: StopReason::ToolUse,
+                        usage: TokenUsage::default(),
                     });
                 }
-                state.pending_done = Some(LlmEvent::Done {
-                    stop_reason: StopReason::ToolUse,
-                    usage: TokenUsage::default(),
-                });
-            }
-            "stop" => {
-                state.pending_done = Some(LlmEvent::Done {
-                    stop_reason: StopReason::EndTurn,
-                    usage: TokenUsage::default(),
-                });
             }
             "length" => {
                 state.pending_done = Some(LlmEvent::Done {
@@ -790,11 +815,13 @@ mod tests {
                         id: "tc1".into(),
                         name: "bash".into(),
                         input: json!({}),
+                        extra: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tc2".into(),
                         name: "read".into(),
                         input: json!({}),
+                        extra: None,
                     },
                 ],
             ),
@@ -825,11 +852,13 @@ mod tests {
                         id: "tc1".into(),
                         name: "bash".into(),
                         input: json!({}),
+                        extra: None,
                     },
                     ContentBlock::ToolUse {
                         id: "tc2".into(),
                         name: "read".into(),
                         input: json!({}),
+                        extra: None,
                     },
                 ],
             ),
@@ -859,6 +888,7 @@ mod tests {
                     id: "tc1".into(),
                     name: "bash".into(),
                     input: json!({}),
+                    extra: None,
                 }],
             ),
             Message::new(
@@ -1011,5 +1041,73 @@ mod tests {
 
         assert_eq!(state.input_tokens, 50_000);
         assert_eq!(state.output_tokens, 200);
+    }
+
+    #[test]
+    fn tool_calls_with_stop_finish_reason() {
+        // Gemini uses finish_reason:"stop" even when tool_calls are present.
+        // The accumulated tool calls must still be emitted.
+        let mut state = StreamState::new();
+
+        // chunk 1: tool call delta (name + partial args)
+        let chunk1 = r#"{"choices":[{"delta":{"role":"assistant","tool_calls":[{"extra_content":{},"function":{"arguments":"{\"skill\":\"test\",\"args\":\"hello\"}","name":"Skill"},"id":"call_abc123","type":"function"}]},"index":0}]}"#;
+        let events1 = parse_sse_chunk(chunk1, &mut state);
+        assert!(events1.is_empty(), "no events until finish_reason");
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.tool_calls[0].name, "Skill");
+
+        // chunk 2: finish_reason:"stop" (not "tool_calls")
+        let chunk2 = r#"{"choices":[{"delta":{"role":"assistant"},"finish_reason":"stop","index":0}],"usage":{"prompt_tokens":100,"completion_tokens":20,"total_tokens":120}}"#;
+        let events2 = parse_sse_chunk(chunk2, &mut state);
+
+        // Tool call should be emitted
+        let tool_events: Vec<_> = events2
+            .iter()
+            .filter(|e| matches!(e, LlmEvent::ToolUse { .. }))
+            .collect();
+        assert_eq!(tool_events.len(), 1, "tool call should be emitted on stop");
+        if let LlmEvent::ToolUse {
+            id, name, input, ..
+        } = &tool_events[0]
+        {
+            assert_eq!(id, "call_abc123");
+            assert_eq!(name, "Skill");
+            assert_eq!(input["skill"], "test");
+        }
+
+        // Done should be deferred with ToolUse stop reason
+        let done = state.flush_done().unwrap();
+        match done {
+            LlmEvent::Done { stop_reason, .. } => {
+                assert_eq!(stop_reason, StopReason::ToolUse);
+            }
+            other => panic!("expected Done with ToolUse, got {other:?}"),
+        }
+
+        assert!(state.tool_calls.is_empty(), "tool calls should be drained");
+    }
+
+    #[test]
+    fn stop_without_tool_calls_unchanged() {
+        // Standard stop without tool calls should still produce EndTurn.
+        let mut state = StreamState::new();
+
+        let chunk =
+            r#"{"choices":[{"delta":{"content":"done"},"finish_reason":"stop","index":0}]}"#;
+        let events = parse_sse_chunk(chunk, &mut state);
+
+        let text_events: Vec<_> = events
+            .iter()
+            .filter(|e| matches!(e, LlmEvent::TextDelta(_)))
+            .collect();
+        assert_eq!(text_events.len(), 1);
+
+        let done = state.flush_done().unwrap();
+        match done {
+            LlmEvent::Done { stop_reason, .. } => {
+                assert_eq!(stop_reason, StopReason::EndTurn);
+            }
+            other => panic!("expected Done with EndTurn, got {other:?}"),
+        }
     }
 }
