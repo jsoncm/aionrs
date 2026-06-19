@@ -8,6 +8,7 @@ pub mod compact;
 pub mod confirm;
 pub mod context;
 pub mod engine;
+pub mod error;
 pub mod orchestration;
 pub mod output;
 pub mod plan;
