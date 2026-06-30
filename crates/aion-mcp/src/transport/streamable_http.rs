@@ -60,10 +60,7 @@ impl StreamableHttpTransport {
     }
 
     /// Parse response based on content type
-    async fn parse_response(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<JsonRpcResponse, McpError> {
+    async fn parse_response(&self, response: reqwest::Response) -> Result<JsonRpcResponse, McpError> {
         // Capture session ID from response headers
         if let Some(sid) = response.headers().get("mcp-session-id")
             && let Ok(sid_str) = sid.to_str()
@@ -87,17 +84,13 @@ impl StreamableHttpTransport {
                 .text()
                 .await
                 .map_err(|e| McpError::Transport(format!("Read response body failed: {}", e)))?;
-            serde_json::from_str(&text).map_err(|e| {
-                McpError::Transport(format!("Parse JSON response failed: {} — raw: {}", e, text))
-            })
+            serde_json::from_str(&text)
+                .map_err(|e| McpError::Transport(format!("Parse JSON response failed: {} — raw: {}", e, text)))
         }
     }
 
     /// Parse an SSE stream response to extract JSON-RPC response
-    async fn parse_sse_response(
-        &self,
-        response: reqwest::Response,
-    ) -> Result<JsonRpcResponse, McpError> {
+    async fn parse_sse_response(&self, response: reqwest::Response) -> Result<JsonRpcResponse, McpError> {
         use futures::StreamExt;
 
         let mut stream = response.bytes_stream();
@@ -112,9 +105,7 @@ impl StreamableHttpTransport {
             }
         }
 
-        Err(McpError::Transport(
-            "SSE stream ended without JSON-RPC response".into(),
-        ))
+        Err(McpError::Transport("SSE stream ended without JSON-RPC response".into()))
     }
 }
 
@@ -151,8 +142,8 @@ fn extract_jsonrpc_from_sse_buffer(buffer: &str) -> Option<JsonRpcResponse> {
 #[async_trait]
 impl McpTransport for StreamableHttpTransport {
     async fn request(&self, req: &JsonRpcRequest) -> Result<JsonRpcResponse, McpError> {
-        let body = serde_json::to_string(req)
-            .map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
+        let body =
+            serde_json::to_string(req).map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
 
         let http_req = self.build_request(&body).await;
         let response = http_req
@@ -180,8 +171,8 @@ impl McpTransport for StreamableHttpTransport {
     }
 
     async fn notify(&self, req: &JsonRpcRequest) -> Result<(), McpError> {
-        let body = serde_json::to_string(req)
-            .map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
+        let body =
+            serde_json::to_string(req).map_err(|e| McpError::Transport(format!("JSON serialize error: {}", e)))?;
 
         let http_req = self.build_request(&body).await;
         http_req
@@ -199,42 +190,5 @@ impl McpTransport for StreamableHttpTransport {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// Servers built on the MCP Python SDK / `fastmcp` use `sse-starlette`,
-    /// whose default SSE line separator is CRLF (`\r\n`). The event terminator
-    /// is therefore `\r\n\r\n`, which does not contain `\n\n`. The parser must
-    /// still recover the JSON-RPC response, otherwise such servers connect but
-    /// expose no tools to the model.
-    #[test]
-    fn extracts_jsonrpc_from_crlf_delimited_sse() {
-        let body = "event: message\r\ndata: {\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"tools\":[]}}\r\n\r\n";
-        let resp = extract_jsonrpc_from_sse_buffer(body).expect("should parse CRLF SSE");
-        assert_eq!(resp.id, Some(2));
-        assert!(resp.result.is_some());
-    }
-
-    /// Node `@modelcontextprotocol/sdk` servers emit LF-delimited SSE.
-    #[test]
-    fn extracts_jsonrpc_from_lf_delimited_sse() {
-        let body = "event: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}\n\n";
-        let resp = extract_jsonrpc_from_sse_buffer(body).expect("should parse LF SSE");
-        assert_eq!(resp.id, Some(1));
-    }
-
-    /// Data split across multiple `data:` lines must be reassembled.
-    #[test]
-    fn reassembles_multiline_data() {
-        let body = "data: {\"jsonrpc\":\"2.0\",\r\ndata: \"id\":7,\"result\":{}}\r\n\r\n";
-        let resp = extract_jsonrpc_from_sse_buffer(body).expect("should join data lines");
-        assert_eq!(resp.id, Some(7));
-    }
-
-    /// Notifications (no `id`) and comment/ping lines must be skipped.
-    #[test]
-    fn returns_none_without_complete_response() {
-        let body = ": keep-alive\r\n\r\nevent: message\r\ndata: not-json\r\n\r\n";
-        assert!(extract_jsonrpc_from_sse_buffer(body).is_none());
-    }
-}
+#[path = "streamable_http_test.rs"]
+mod streamable_http_test;

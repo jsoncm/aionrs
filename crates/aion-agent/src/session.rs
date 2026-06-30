@@ -47,13 +47,7 @@ impl SessionManager {
     }
 
     /// Create a new session, return it
-    pub fn create(
-        &self,
-        provider: &str,
-        model: &str,
-        cwd: &str,
-        session_id: Option<&str>,
-    ) -> anyhow::Result<Session> {
+    pub fn create(&self, provider: &str, model: &str, cwd: &str, session_id: Option<&str>) -> anyhow::Result<Session> {
         std::fs::create_dir_all(&self.directory)?;
 
         let id = if let Some(custom_id) = session_id {
@@ -85,11 +79,7 @@ impl SessionManager {
     /// Save current session state (called after each turn)
     pub fn save(&self, session: &Session) -> anyhow::Result<()> {
         std::fs::create_dir_all(&self.directory)?;
-        let filename = format!(
-            "{}_{}.json",
-            session.created_at.format("%Y-%m-%d"),
-            session.id
-        );
+        let filename = format!("{}_{}.json", session.created_at.format("%Y-%m-%d"), session.id);
         let path = self.directory.join(&filename);
         let json = serde_json::to_string_pretty(session)?;
         std::fs::write(path, json)?;
@@ -114,10 +104,9 @@ impl SessionManager {
         };
 
         let pattern = format!("*_{}.json", meta.id);
-        let session_files: Vec<_> =
-            glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref())?
-                .filter_map(|r| r.ok())
-                .collect();
+        let session_files: Vec<_> = glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref())?
+            .filter_map(|r| r.ok())
+            .collect();
 
         let path = session_files
             .first()
@@ -138,9 +127,7 @@ impl SessionManager {
         let index_path = self.directory.join("index.json");
         match std::fs::read_to_string(&index_path) {
             Ok(content) => Ok(serde_json::from_str(&content)?),
-            Err(_) => Ok(SessionIndex {
-                sessions: Vec::new(),
-            }),
+            Err(_) => Ok(SessionIndex { sessions: Vec::new() }),
         }
     }
 
@@ -205,8 +192,7 @@ impl SessionManager {
         // Delete session files
         for meta in &removed {
             let pattern = format!("*_{}.json", meta.id);
-            if let Ok(paths) = glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref())
-            {
+            if let Ok(paths) = glob::glob(self.directory.join(&pattern).to_string_lossy().as_ref()) {
                 for path in paths.flatten() {
                     let _ = std::fs::remove_file(path);
                 }
@@ -223,10 +209,7 @@ impl SessionManager {
 
 fn generate_short_id() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .subsec_nanos();
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().subsec_nanos();
     format!("{:06x}", nanos & 0xFFFFFF)
 }
 
@@ -240,119 +223,5 @@ fn truncate_str(s: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use aion_types::message::{ContentBlock, Message, Role};
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_create_session() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let result = manager.create("openai", "gpt-4", "/tmp", None);
-        assert!(result.is_ok());
-
-        let session = result.unwrap();
-        assert_eq!(session.provider, "openai");
-        assert_eq!(session.model, "gpt-4");
-        assert_eq!(session.cwd, "/tmp");
-        assert!(session.messages.is_empty());
-    }
-
-    #[test]
-    fn test_save_and_load_session() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let session = manager
-            .create("anthropic", "claude-3", "/home", None)
-            .unwrap();
-        let loaded = manager.load(&session.id).unwrap();
-
-        assert_eq!(loaded.id, session.id);
-        assert_eq!(loaded.provider, "anthropic");
-        assert_eq!(loaded.model, "claude-3");
-        assert_eq!(loaded.cwd, "/home");
-    }
-
-    #[test]
-    fn test_load_nonexistent_returns_error() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let result = manager.load("nonexistent-id");
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_list_sessions_empty() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let sessions = manager.list().unwrap();
-        assert!(sessions.is_empty());
-    }
-
-    #[test]
-    fn test_list_sessions_sorted_by_time() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let s1 = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
-        let s2 = manager
-            .create("anthropic", "claude-3", "/home", None)
-            .unwrap();
-
-        let list = manager.list().unwrap();
-        assert_eq!(list.len(), 2);
-
-        let ids: Vec<&str> = list.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&s1.id.as_str()));
-        assert!(ids.contains(&s2.id.as_str()));
-    }
-
-    #[test]
-    fn test_update_index() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 10);
-
-        let mut session = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
-
-        let msg = Message::new(
-            Role::User,
-            vec![ContentBlock::Text {
-                text: "hello".to_string(),
-            }],
-        );
-        session.messages.push(msg);
-
-        manager.update_index_for(&session).unwrap();
-
-        let list = manager.list().unwrap();
-        assert_eq!(list.len(), 1);
-        assert_eq!(list[0].summary, "hello");
-        assert_eq!(list[0].message_count, 1);
-    }
-
-    #[test]
-    fn test_cleanup_old_sessions() {
-        let dir = tempdir().unwrap();
-        let manager = SessionManager::new(dir.path().to_path_buf(), 2);
-
-        let _s1 = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
-        let _s2 = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
-        let _s3 = manager.create("openai", "gpt-4", "/tmp", None).unwrap();
-
-        let list = manager.list().unwrap();
-        assert_eq!(list.len(), 2);
-    }
-
-    #[test]
-    fn test_session_id_uniqueness() {
-        let id1 = generate_short_id();
-        std::thread::sleep(std::time::Duration::from_millis(2));
-        let id2 = generate_short_id();
-        assert_ne!(id1, id2);
-    }
-}
+#[path = "session_test.rs"]
+mod session_test;

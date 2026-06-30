@@ -57,13 +57,7 @@ impl AgentSpawner {
 
         let tools = build_tool_registry(&[], &self.cwd);
         let output: Arc<dyn OutputSink> = Arc::new(NullSink);
-        let mut engine = AgentEngine::new_with_provider(
-            self.provider.clone(),
-            config,
-            tools,
-            output,
-            self.cwd.clone(),
-        );
+        let mut engine = AgentEngine::new_with_provider(self.provider.clone(), config, tools, output, self.cwd.clone());
 
         match engine.run(&sub_config.prompt, "").await {
             Ok(result) => SubAgentResult {
@@ -120,11 +114,7 @@ impl AgentSpawner {
 
 #[async_trait]
 impl Spawner for AgentSpawner {
-    async fn spawn_fork(
-        &self,
-        sub_config: SubAgentConfig,
-        overrides: ForkOverrides,
-    ) -> SubAgentResult {
+    async fn spawn_fork(&self, sub_config: SubAgentConfig, overrides: ForkOverrides) -> SubAgentResult {
         let mut config = self.base_config.clone();
         config.max_turns = Some(sub_config.max_turns);
         config.max_tokens = sub_config.max_tokens;
@@ -139,13 +129,7 @@ impl Spawner for AgentSpawner {
 
         let tools = build_tool_registry(&overrides.allowed_tools, &self.cwd);
         let output: Arc<dyn OutputSink> = Arc::new(NullSink);
-        let mut engine = AgentEngine::new_with_provider(
-            self.provider.clone(),
-            config,
-            tools,
-            output,
-            self.cwd.clone(),
-        );
+        let mut engine = AgentEngine::new_with_provider(self.provider.clone(), config, tools, output, self.cwd.clone());
         engine.set_initial_reasoning_effort(overrides.effort.clone());
 
         match engine.run(&sub_config.prompt, "").await {
@@ -172,10 +156,7 @@ fn build_tool_registry(allowed: &[String], cwd: &Path) -> ToolRegistry {
         ("Read", Box::new(ReadTool::new(None))),
         ("Write", Box::new(WriteTool::new(None))),
         ("Edit", Box::new(EditTool::new(None))),
-        (
-            "ExecCommand",
-            Box::new(ExecCommandTool::new(cwd.to_path_buf())),
-        ),
+        ("ExecCommand", Box::new(ExecCommandTool::new(cwd.to_path_buf()))),
         ("Grep", Box::new(GrepTool::new(cwd.to_path_buf()))),
         ("Glob", Box::new(GlobTool::new(cwd.to_path_buf()))),
     ];
@@ -190,47 +171,5 @@ fn build_tool_registry(allowed: &[String], cwd: &Path) -> ToolRegistry {
 }
 
 #[cfg(test)]
-mod phase7_tests {
-    use super::{ForkOverrides, SubAgentConfig, build_tool_registry};
-
-    #[test]
-    fn tc_7_1_fork_overrides_default_values() {
-        let o = ForkOverrides::default();
-        assert!(o.model.is_none());
-        assert!(o.effort.is_none());
-        assert!(o.allowed_tools.is_empty());
-    }
-
-    #[test]
-    fn tc_7_40_build_tool_registry_empty_allowed_registers_all() {
-        let registry = build_tool_registry(&[], &std::env::temp_dir());
-        for name in &["Read", "Write", "Edit", "ExecCommand", "Grep", "Glob"] {
-            assert!(
-                registry.get(name).is_some(),
-                "tool '{name}' should be registered"
-            );
-        }
-    }
-
-    #[test]
-    fn tc_7_43_build_tool_registry_filters_to_allowed() {
-        let allowed = vec!["ExecCommand".to_string(), "Read".to_string()];
-        let registry = build_tool_registry(&allowed, &std::env::temp_dir());
-        assert!(registry.get("ExecCommand").is_some());
-        assert!(registry.get("Read").is_some());
-        assert!(registry.get("Write").is_none());
-    }
-
-    #[test]
-    fn tc_7_sub_agent_config_original_fields_intact() {
-        let config = SubAgentConfig {
-            name: "test-agent".to_string(),
-            prompt: "do the task".to_string(),
-            max_turns: 5,
-            max_tokens: 1024,
-            system_prompt: Some("you are helpful".to_string()),
-        };
-        assert_eq!(config.name, "test-agent");
-        assert_eq!(config.max_turns, 5);
-    }
-}
+#[path = "spawner_test.rs"]
+mod spawner_test;

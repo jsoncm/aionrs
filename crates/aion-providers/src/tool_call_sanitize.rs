@@ -28,12 +28,8 @@ impl DroppedToolCallReason {
 
     pub(crate) fn short_placeholder(self) -> &'static str {
         match self {
-            DroppedToolCallReason::EmptyName => {
-                "[tool call skipped: malformed (empty function name).]"
-            }
-            DroppedToolCallReason::EmptyId => {
-                "[tool call skipped: malformed (empty tool call id).]"
-            }
+            DroppedToolCallReason::EmptyName => "[tool call skipped: malformed (empty function name).]",
+            DroppedToolCallReason::EmptyId => "[tool call skipped: malformed (empty tool call id).]",
         }
     }
 }
@@ -42,10 +38,7 @@ impl DroppedToolCallReason {
 /// assistant content during projection. Shared by OpenAI and Anthropic
 /// projection paths so the wording stays identical across providers.
 /// `arguments` is the tool input, truncated to 100 chars on a char boundary.
-pub(crate) fn format_dropped_tool_call(
-    reason: DroppedToolCallReason,
-    input: &serde_json::Value,
-) -> String {
+pub(crate) fn format_dropped_tool_call(reason: DroppedToolCallReason, input: &serde_json::Value) -> String {
     let raw = serde_json::to_string(input).unwrap_or_default();
     let args = truncate_chars(&raw, 100);
     format!(
@@ -66,44 +59,5 @@ fn truncate_chars(s: &str, max: usize) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    // F1-8
-    #[test]
-    fn test_format_dropped_tool_call_template() {
-        assert_eq!(
-            format_dropped_tool_call(DroppedToolCallReason::EmptyName, &json!({})),
-            "[tool call skipped: malformed (empty function name). arguments={}. This call was not executed; re-issue with a valid name if still needed.]"
-        );
-        assert_eq!(
-            format_dropped_tool_call(DroppedToolCallReason::EmptyName, &json!({"a":1})),
-            "[tool call skipped: malformed (empty function name). arguments={\"a\":1}. This call was not executed; re-issue with a valid name if still needed.]"
-        );
-    }
-
-    // F2-8
-    #[test]
-    fn test_format_dropped_tool_call_empty_id_template() {
-        assert_eq!(
-            format_dropped_tool_call(DroppedToolCallReason::EmptyId, &json!({"command":"ls"})),
-            "[tool call skipped: malformed (empty tool call id). arguments={\"command\":\"ls\"}. This call was not executed; re-issue with a valid id if still needed.]"
-        );
-    }
-
-    // F1-6
-    #[test]
-    fn test_format_truncates_at_char_boundary() {
-        // 150 multi-byte chars; must truncate to 100 chars with `…`, no panic.
-        let big = "中".repeat(150);
-        let out = format_dropped_tool_call(DroppedToolCallReason::EmptyId, &json!({"k": big}));
-        assert!(out.contains('…'));
-        assert!(out.starts_with("[tool call skipped:"));
-        // Pin the exact 100-char truncation boundary: the args segment between
-        // `arguments=` and the `…` ellipsis must be exactly 100 chars.
-        let after = out.split("arguments=").nth(1).unwrap();
-        let args = after.split('…').next().unwrap();
-        assert_eq!(args.chars().count(), 100);
-    }
-}
+#[path = "tool_call_sanitize_test.rs"]
+mod tool_call_sanitize_test;

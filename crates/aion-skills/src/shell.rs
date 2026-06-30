@@ -1,5 +1,6 @@
 use futures::future::join_all;
 use regex::Regex;
+use std::path::Path;
 use std::sync::OnceLock;
 
 use aion_process::{CommandRunner, DEFAULT_TIMEOUT};
@@ -21,7 +22,7 @@ use crate::types::LoadedFrom;
 pub async fn execute_shell_commands(
     content: &str,
     loaded_from: LoadedFrom,
-    cwd: &str,
+    cwd: &Path,
 ) -> Result<String, ShellExecutionError> {
     if loaded_from == LoadedFrom::Mcp {
         return Ok(content.to_owned());
@@ -33,10 +34,7 @@ pub async fn execute_shell_commands(
     }
 
     // Execute all commands in parallel
-    let futures: Vec<_> = matches
-        .iter()
-        .map(|m| execute_command(&m.command, cwd))
-        .collect();
+    let futures: Vec<_> = matches.iter().map(|m| execute_command(&m.command, cwd)).collect();
     let outputs: Vec<Result<String, ShellExecutionError>> = join_all(futures).await;
 
     // Pair matches with outputs; fail-fast on first error
@@ -136,8 +134,7 @@ fn extract_shell_matches(content: &str) -> Vec<ShellMatch> {
     // Track byte ranges already covered by block matches to avoid overlap
     let block_ranges: Vec<(usize, usize)> = matches.iter().map(|m| (m.start, m.end)).collect();
 
-    let overlaps_block =
-        |s: usize, e: usize| -> bool { block_ranges.iter().any(|(bs, be)| s < *be && e > *bs) };
+    let overlaps_block = |s: usize, e: usize| -> bool { block_ranges.iter().any(|(bs, be)| s < *be && e > *bs) };
 
     // Inline line-start: group(1) = full !`cmd`, group(2) = cmd
     for cap in inline_line_start_regex().captures_iter(content) {
@@ -190,7 +187,7 @@ fn extract_shell_matches(content: &str) -> Vec<ShellMatch> {
 // ---------------------------------------------------------------------------
 
 /// Execute a single shell command and return its combined stdout/stderr output.
-async fn execute_command(command: &str, cwd: &str) -> Result<String, ShellExecutionError> {
+async fn execute_command(command: &str, cwd: &Path) -> Result<String, ShellExecutionError> {
     let shell = aion_config::shell::default_shell();
     let mut command_builder = aion_config::shell::shell_command_builder(&shell, command, false);
     command_builder.current_dir(cwd);
@@ -211,10 +208,7 @@ async fn execute_command(command: &str, cwd: &str) -> Result<String, ShellExecut
         let output = if formatted.is_empty() {
             format!("timed out after {}ms", DEFAULT_TIMEOUT.as_millis())
         } else {
-            format!(
-                "timed out after {}ms\n{formatted}",
-                DEFAULT_TIMEOUT.as_millis()
-            )
+            format!("timed out after {}ms\n{formatted}", DEFAULT_TIMEOUT.as_millis())
         };
         return Err(ShellExecutionError::CommandFailed {
             pattern: command.to_owned(),
@@ -243,172 +237,6 @@ fn format_output(stdout: &str, stderr: &str) -> String {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
-mod tests {
-    // Note: these are the implementer's tests; supplemental tests below.
-    use super::*;
-
-    // Helper: run execute_shell_commands with LoadedFrom::Skills
-    async fn run(content: &str) -> Result<String, ShellExecutionError> {
-        let tmp = std::env::temp_dir();
-        execute_shell_commands(content, LoadedFrom::Skills, tmp.to_str().unwrap()).await
-    }
-
-    // -----------------------------------------------------------------------
-    // format_output
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_format_output_both() {
-        let s = format_output("out", "err");
-        assert_eq!(s, "out\n[stderr]\nerr");
-    }
-
-    #[test]
-    fn test_format_output_stdout_only() {
-        assert_eq!(format_output("out", ""), "out");
-    }
-
-    #[test]
-    fn test_format_output_stderr_only() {
-        assert_eq!(format_output("", "err"), "[stderr]\nerr");
-    }
-
-    #[test]
-    fn test_format_output_empty() {
-        assert_eq!(format_output("", ""), "");
-    }
-
-    // -----------------------------------------------------------------------
-    // extract_shell_matches
-    // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_extract_block_match() {
-        let content = "Before\n```!\necho hello\n```\nAfter";
-        let matches = extract_shell_matches(content);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].command, "echo hello");
-        assert!(matches[0].full_match.starts_with("```!"));
-    }
-
-    #[test]
-    fn test_extract_inline_line_start() {
-        let content = "!`pwd`";
-        let matches = extract_shell_matches(content);
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].command, "pwd");
-    }
-
-    #[test]
-    fn test_extract_inline_whitespace_preceded() {
-        let content = "The dir is !`pwd` and user is !`whoami`";
-        let matches = extract_shell_matches(content);
-        assert_eq!(matches.len(), 2);
-        let cmds: Vec<&str> = matches.iter().map(|m| m.command.as_str()).collect();
-        assert!(cmds.contains(&"pwd"));
-        assert!(cmds.contains(&"whoami"));
-    }
-
-    #[test]
-    fn test_extract_no_matches() {
-        let content = "No shell commands here.";
-        assert!(extract_shell_matches(content).is_empty());
-    }
-
-    #[test]
-    fn test_extract_block_and_inline() {
-        let content = "!`echo inline`\n```!\necho block\n```";
-        let matches = extract_shell_matches(content);
-        assert_eq!(matches.len(), 2);
-    }
-
-    // -----------------------------------------------------------------------
-    // MCP skill blocked
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_mcp_skill_returns_unchanged() {
-        let content = "!`pwd`";
-        let tmp = std::env::temp_dir();
-        let result = execute_shell_commands(content, LoadedFrom::Mcp, tmp.to_str().unwrap()).await;
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), content);
-    }
-
-    // -----------------------------------------------------------------------
-    // Block execution
-    // -----------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn test_block_execution() {
-        let content = "Output:\n```!\necho hello\n```\nDone.";
-        let result = run(content).await.unwrap();
-        assert!(result.contains("hello"));
-        assert!(!result.contains("```!"));
-    }
-
-    #[tokio::test]
-    async fn test_inline_execution_line_start() {
-        let content = "!`echo world`";
-        let result = run(content).await.unwrap();
-        assert!(result.contains("world"));
-    }
-
-    #[tokio::test]
-    async fn test_inline_execution_whitespace_preceded() {
-        let content = "Dir: !`echo /tmp`";
-        let result = run(content).await.unwrap();
-        assert!(result.contains("/tmp"));
-        // Leading space preserved
-        assert!(result.contains("Dir: "));
-    }
-
-    #[tokio::test]
-    async fn test_no_shell_commands_unchanged() {
-        let content = "No commands here.";
-        let result = run(content).await.unwrap();
-        assert_eq!(result, content);
-    }
-
-    #[tokio::test]
-    async fn test_empty_output_replaced_with_empty_string() {
-        // `cd .` exits 0 with no output on all platforms
-        let content = "before !`cd .` after";
-        let result = run(content).await.unwrap();
-        assert_eq!(result, "before  after");
-    }
-
-    #[tokio::test]
-    async fn test_multiple_inline_parallel() {
-        let content = "A: !`echo aaa` B: !`echo bbb`";
-        let result = run(content).await.unwrap();
-        assert!(result.contains("aaa"));
-        assert!(result.contains("bbb"));
-    }
-
-    #[tokio::test]
-    async fn test_stderr_formatted() {
-        // Write to stderr only — cross-platform redirection
-        let content = if cfg!(windows) {
-            "!`echo err 1>&2`"
-        } else {
-            "!`echo err >&2`"
-        };
-        let result = run(content).await.unwrap();
-        assert!(result.contains("[stderr]"));
-        assert!(result.contains("err"));
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Supplemental tests (tester role — split to keep file under 800 lines)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-#[path = "shell_supplemental_tests.rs"]
-mod supplemental_tests;
+#[path = "shell_test.rs"]
+mod shell_test;

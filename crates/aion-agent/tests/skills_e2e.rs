@@ -8,7 +8,7 @@
 //! on any pre-existing files in the repo or user home directory.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use aion_agent::context::{SystemPromptCache, build_system_prompt};
@@ -51,7 +51,8 @@ fn make_project() -> (TempDir, PathBuf) {
     fs::write(
         greet_dir.join("SKILL.md"),
         "---\nname: greet\ndescription: Greet a user by name\n---\n\nHello, $ARGUMENTS! Welcome to the project.\n",
-    ).unwrap();
+    )
+    .unwrap();
 
     // --- db:migrate (nested namespace) ---
     let migrate_dir = skills_dir.join("db").join("migrate");
@@ -86,10 +87,10 @@ fn make_project() -> (TempDir, PathBuf) {
     (tmp, root)
 }
 
-fn make_tool(skills: Vec<SkillMetadata>, cwd: &str) -> SkillTool {
+fn make_tool(skills: Vec<SkillMetadata>, cwd: &Path) -> SkillTool {
     SkillTool::new(
         Arc::new(skills),
-        cwd.to_string(),
+        cwd.to_path_buf(),
         SkillPermissionChecker::new(vec![], vec![], false),
     )
 }
@@ -144,13 +145,10 @@ async fn e3_nested_namespace() {
 #[tokio::test]
 async fn e4_variable_substitution() {
     let (_guard, root) = make_project();
-    let cwd = root.to_string_lossy().to_string();
     let skills = load_all_skills(&root, &[], false, None).await;
-    let tool = make_tool(skills, &cwd);
+    let tool = make_tool(skills, &root);
 
-    let result = tool
-        .execute(json!({"skill": "greet", "args": "Alice"}))
-        .await;
+    let result = tool.execute(json!({"skill": "greet", "args": "Alice"})).await;
     assert!(!result.is_error, "E4 FAIL: error: {}", result.content);
     assert!(
         result.content.contains("Hello, Alice!"),
@@ -168,9 +166,8 @@ async fn e4_variable_substitution() {
 #[cfg(not(windows))] // Shell expansion uses Unix commands; skip on Windows
 async fn e5_shell_expansion() {
     let (_guard, root) = make_project();
-    let cwd = root.to_string_lossy().to_string();
     let skills = load_all_skills(&root, &[], false, None).await;
-    let tool = make_tool(skills, &cwd);
+    let tool = make_tool(skills, &root);
 
     let result = tool.execute(json!({"skill": "shell-demo"})).await;
     assert!(!result.is_error, "E5 FAIL: error: {}", result.content);
@@ -194,19 +191,13 @@ async fn e6_conditional_activation() {
     let skills = load_all_skills(&root, &[], false, None).await;
 
     let rust_review = find_skill(&skills, "rust-review").expect("E6 FAIL: 'rust-review' not found");
-    assert!(
-        !rust_review.paths.is_empty(),
-        "E6 FAIL: paths should not be empty"
-    );
+    assert!(!rust_review.paths.is_empty(), "E6 FAIL: paths should not be empty");
     assert!(
         rust_review.paths.iter().any(|p| p.contains("*.rs")),
         "E6 FAIL: paths should contain '*.rs'. Got: {:?}",
         rust_review.paths
     );
-    println!(
-        "E6 PASS: 'rust-review' has conditional paths: {:?}",
-        rust_review.paths
-    );
+    println!("E6 PASS: 'rust-review' has conditional paths: {:?}", rust_review.paths);
 }
 
 // ---------------------------------------------------------------------------
@@ -230,10 +221,7 @@ async fn e7_system_prompt_injection() {
         false,
         false,
     );
-    assert!(
-        prompt.contains("greet"),
-        "E7 FAIL: 'greet' not in system prompt"
-    );
+    assert!(prompt.contains("greet"), "E7 FAIL: 'greet' not in system prompt");
     assert!(
         prompt.contains("db:migrate"),
         "E7 FAIL: 'db:migrate' not in system prompt"
@@ -252,18 +240,13 @@ async fn e7_system_prompt_injection() {
 #[tokio::test]
 async fn e8_full_execution() {
     let (_guard, root) = make_project();
-    let cwd = root.to_string_lossy().to_string();
     let skills = load_all_skills(&root, &[], false, None).await;
-    let tool = make_tool(skills, &cwd);
+    let tool = make_tool(skills, &root);
 
-    let result = tool
-        .execute(json!({"skill": "db:migrate", "args": "production"}))
-        .await;
+    let result = tool.execute(json!({"skill": "db:migrate", "args": "production"})).await;
     assert!(!result.is_error, "E8 FAIL: error: {}", result.content);
     assert!(
-        result
-            .content
-            .contains("Running migrations for: production"),
+        result.content.contains("Running migrations for: production"),
         "E8 FAIL: $ARGUMENTS not substituted. Got: {}",
         result.content
     );
@@ -301,9 +284,8 @@ async fn e9_deduplication() {
 #[tokio::test]
 async fn e10_skill_not_found() {
     let (_guard, root) = make_project();
-    let cwd = root.to_string_lossy().to_string();
     let skills = load_all_skills(&root, &[], false, None).await;
-    let tool = make_tool(skills, &cwd);
+    let tool = make_tool(skills, &root);
 
     let result = tool.execute(json!({"skill": "nonexistent-skill"})).await;
     assert!(result.is_error, "E10 FAIL: should return error");
@@ -322,13 +304,10 @@ async fn e10_skill_not_found() {
 #[tokio::test]
 async fn e11_legacy_command_execution() {
     let (_guard, root) = make_project();
-    let cwd = root.to_string_lossy().to_string();
     let skills = load_all_skills(&root, &[], false, None).await;
-    let tool = make_tool(skills, &cwd);
+    let tool = make_tool(skills, &root);
 
-    let result = tool
-        .execute(json!({"skill": "legacy-cmd", "args": "test-arg"}))
-        .await;
+    let result = tool.execute(json!({"skill": "legacy-cmd", "args": "test-arg"})).await;
     assert!(!result.is_error, "E11 FAIL: error: {}", result.content);
     assert!(
         result.content.contains("legacy command"),

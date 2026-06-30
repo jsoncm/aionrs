@@ -37,7 +37,7 @@ pub async fn execute_tool_calls(
     tool_calls: &[ContentBlock],
     confirmer: &Arc<Mutex<ToolConfirmer>>,
     mut hooks: Option<&mut HookEngine>,
-    compaction_level: aion_compact::CompactionLevel,
+    compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
@@ -62,9 +62,7 @@ pub async fn execute_tool_calls(
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
             let futures: Vec<_> = approved
                 .iter()
-                .map(|call| {
-                    execute_single(registry, call, hooks_shared, compaction_level, toon_enabled)
-                })
+                .map(|call| execute_single(registry, call, hooks_shared, compaction_level, toon_enabled))
                 .collect();
             let batch_results = futures::future::join_all(futures).await;
             for (block, modifier) in batch_results {
@@ -84,14 +82,8 @@ pub async fn execute_tool_calls(
                         let modifier;
                         {
                             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-                            (block, modifier) = execute_single(
-                                registry,
-                                call,
-                                hooks_shared,
-                                compaction_level,
-                                toon_enabled,
-                            )
-                            .await;
+                            (block, modifier) =
+                                execute_single(registry, call, hooks_shared, compaction_level, toon_enabled).await;
                         }
                         // Merge skill hooks after a successful sequential execution.
                         if !block_is_error(&block) {
@@ -119,10 +111,7 @@ fn confirm_call(
     confirmer: &Arc<Mutex<ToolConfirmer>>,
     call: &ContentBlock,
 ) -> Result<Option<ContentBlock>, ExecutionControl> {
-    let ContentBlock::ToolUse {
-        id, name, input, ..
-    } = call
-    else {
+    let ContentBlock::ToolUse { id, name, input, .. } = call else {
         return Ok(None);
     };
 
@@ -147,13 +136,10 @@ async fn execute_single(
     registry: &ToolRegistry,
     call: &ContentBlock,
     hooks: Option<&HookEngine>,
-    compaction_level: aion_compact::CompactionLevel,
+    compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
 ) -> (ContentBlock, Option<ContextModifier>) {
-    let ContentBlock::ToolUse {
-        id, name, input, ..
-    } = call
-    else {
+    let ContentBlock::ToolUse { id, name, input, .. } = call else {
         unreachable!("execute_single called with non-ToolUse block")
     };
 
@@ -214,9 +200,7 @@ async fn execute_single(
 
     // Run post-tool-use hooks
     if let Some(hook_engine) = hooks {
-        let messages = hook_engine
-            .run_post_tool_use(name, input, &result.content)
-            .await;
+        let messages = hook_engine.run_post_tool_use(name, input, &result.content).await;
         for msg in messages {
             tracing::info!(target: "aion_agent", hook_message = %msg, "post-tool-use hook output");
         }
@@ -246,17 +230,14 @@ pub async fn execute_tool_calls_with_approval(
     auto_approve: bool,
     allow_list: &[String],
     mut hooks: Option<&mut HookEngine>,
-    compaction_level: aion_compact::CompactionLevel,
+    compaction_level: aion_compact::CompactLevel,
     toon_enabled: bool,
 ) -> Result<ToolCallOutcome, ExecutionControl> {
     let mut results = Vec::new();
     let mut modifiers = Vec::new();
 
     for call in tool_calls {
-        let ContentBlock::ToolUse {
-            id, name, input, ..
-        } = call
-        else {
+        let ContentBlock::ToolUse { id, name, input, .. } = call else {
             continue;
         };
 
@@ -318,15 +299,11 @@ pub async fn execute_tool_calls_with_approval(
         let modifier;
         {
             let hooks_shared: Option<&HookEngine> = hooks.as_deref();
-            (result, modifier) =
-                execute_single(registry, call, hooks_shared, compaction_level, toon_enabled).await;
+            (result, modifier) = execute_single(registry, call, hooks_shared, compaction_level, toon_enabled).await;
         }
 
         // Emit tool_result event
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
+        if let ContentBlock::ToolResult { content, is_error, .. } = &result {
             let status = if *is_error {
                 ToolStatus::Error
             } else {
@@ -373,11 +350,7 @@ fn merge_skill_hooks_into(engine: &mut HookEngine, registry: &ToolRegistry, call
     }
 }
 
-fn maybe_merge_skill_hooks(
-    registry: &ToolRegistry,
-    call: &ContentBlock,
-    hooks: Option<&mut HookEngine>,
-) {
+fn maybe_merge_skill_hooks(registry: &ToolRegistry, call: &ContentBlock, hooks: Option<&mut HookEngine>) {
     if let Some(engine) = hooks {
         merge_skill_hooks_into(engine, registry, call);
     }
@@ -393,11 +366,7 @@ fn block_is_error(block: &ContentBlock) -> bool {
 /// If required fields are all present (or the schema has none), the original
 /// error is returned unchanged — the failure is a runtime issue, not a
 /// missing-schema problem.
-fn maybe_append_deferred_hint(
-    original_error: &str,
-    schema: serde_json::Value,
-    input: &serde_json::Value,
-) -> String {
+fn maybe_append_deferred_hint(original_error: &str, schema: serde_json::Value, input: &serde_json::Value) -> String {
     let missing: Vec<&str> = schema["required"]
         .as_array()
         .map(|arr| {
@@ -430,12 +399,7 @@ fn truncate_result(content: &str, max_chars: usize) -> String {
         .nth(half)
         .map(|(i, _)| i)
         .unwrap_or(content.len());
-    let tail_start = content
-        .char_indices()
-        .rev()
-        .nth(half - 1)
-        .map(|(i, _)| i)
-        .unwrap_or(0);
+    let tail_start = content.char_indices().rev().nth(half - 1).map(|(i, _)| i).unwrap_or(0);
     let head = &content[..head_end];
     let tail = &content[tail_start..];
     format!(
@@ -490,333 +454,5 @@ fn partition<'a>(registry: &ToolRegistry, calls: &'a [ContentBlock]) -> Vec<Batc
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    // -- truncate_display -----------------------------------------------------
-
-    #[test]
-    fn truncate_display_ascii_short_unchanged() {
-        assert_eq!(truncate_display("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_display_ascii_truncated() {
-        let result = truncate_display("hello world", 5);
-        assert!(result.ends_with("..."));
-        assert!(result.len() <= 20);
-    }
-
-    #[test]
-    fn truncate_display_cjk_does_not_panic() {
-        // 200 CJK chars: each is 3 bytes, so byte index 200 falls mid-character
-        let cjk: String = "你好世界测试".chars().cycle().take(200).collect();
-        let result = truncate_display(&cjk, 50);
-        assert!(result.ends_with("..."));
-    }
-
-    #[test]
-    fn truncate_display_mixed_cjk_ascii_does_not_panic() {
-        let mixed = "abc你好def世界ghi测试".repeat(20);
-        let result = truncate_display(&mixed, 30);
-        assert!(result.ends_with("..."));
-    }
-
-    // -- truncate_result ------------------------------------------------------
-
-    #[test]
-    fn truncate_result_short_unchanged() {
-        let s = "short content";
-        assert_eq!(truncate_result(s, 1000), s);
-    }
-
-    #[test]
-    fn truncate_result_cjk_does_not_panic() {
-        let cjk: String = "这是一段较长的中文内容用于测试截断功能".repeat(50);
-        let result = truncate_result(&cjk, 100);
-        assert!(result.contains("truncated"));
-    }
-
-    #[test]
-    fn truncate_result_mixed_cjk_ascii_does_not_panic() {
-        let mixed = "Hello你好World世界Test测试".repeat(100);
-        let result = truncate_result(&mixed, 200);
-        assert!(result.contains("truncated"));
-    }
-
-    // -- maybe_append_deferred_hint -------------------------------------------
-
-    #[test]
-    fn deferred_hint_appended_when_required_field_missing() {
-        let schema = json!({
-            "type": "object",
-            "properties": { "tasks": { "type": "array" } },
-            "required": ["tasks"]
-        });
-        let input = json!({});
-        let result = maybe_append_deferred_hint("Missing or invalid 'tasks' array", schema, &input);
-        assert!(result.contains("Missing or invalid 'tasks' array"));
-        assert!(result.contains("ToolSearch"));
-    }
-
-    #[test]
-    fn deferred_hint_not_appended_when_required_fields_present() {
-        let schema = json!({
-            "type": "object",
-            "properties": { "tasks": { "type": "array" } },
-            "required": ["tasks"]
-        });
-        let input = json!({"tasks": [{"name": "t1", "prompt": "do x"}]});
-        let result = maybe_append_deferred_hint("Some runtime error", schema, &input);
-        assert_eq!(result, "Some runtime error");
-        assert!(!result.contains("ToolSearch"));
-    }
-
-    #[test]
-    fn deferred_hint_not_appended_when_no_required_field() {
-        let schema = json!({
-            "type": "object",
-            "properties": {}
-        });
-        let input = json!({});
-        let result = maybe_append_deferred_hint("some error", schema, &input);
-        assert_eq!(result, "some error");
-    }
-
-    #[test]
-    fn deferred_hint_not_appended_when_required_is_empty() {
-        let schema = json!({
-            "type": "object",
-            "properties": {},
-            "required": []
-        });
-        let input = json!({});
-        let result = maybe_append_deferred_hint("some error", schema, &input);
-        assert_eq!(result, "some error");
-    }
-
-    #[test]
-    fn deferred_hint_appended_for_partial_missing_fields() {
-        let schema = json!({
-            "type": "object",
-            "properties": {
-                "a": { "type": "string" },
-                "b": { "type": "string" }
-            },
-            "required": ["a", "b"]
-        });
-        let input = json!({"a": "present"});
-        let result = maybe_append_deferred_hint("validation failed", schema, &input);
-        assert!(result.contains("ToolSearch"));
-    }
-
-    // -- execute_single integration tests (deferred tool hint) ----------------
-
-    use aion_tools::Tool;
-    use aion_tools::registry::ToolRegistry;
-
-    struct MockDeferredTool {
-        schema: serde_json::Value,
-    }
-
-    #[async_trait::async_trait]
-    impl Tool for MockDeferredTool {
-        fn name(&self) -> &str {
-            "MockDeferred"
-        }
-        fn description(&self) -> &str {
-            "A mock deferred tool for testing"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            self.schema.clone()
-        }
-        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
-            true
-        }
-        fn is_deferred(&self) -> bool {
-            true
-        }
-        async fn execute(&self, input: serde_json::Value) -> aion_types::tool::ToolResult {
-            if input.get("tasks").is_none() {
-                return aion_types::tool::ToolResult {
-                    content: "Missing or invalid 'tasks' array".to_string(),
-                    is_error: true,
-                };
-            }
-            aion_types::tool::ToolResult {
-                content: "ok".to_string(),
-                is_error: false,
-            }
-        }
-        fn category(&self) -> aion_protocol::events::ToolCategory {
-            aion_protocol::events::ToolCategory::Exec
-        }
-    }
-
-    struct MockNonDeferredTool;
-
-    #[async_trait::async_trait]
-    impl Tool for MockNonDeferredTool {
-        fn name(&self) -> &str {
-            "MockNonDeferred"
-        }
-        fn description(&self) -> &str {
-            "A mock non-deferred tool"
-        }
-        fn input_schema(&self) -> serde_json::Value {
-            json!({
-                "type": "object",
-                "properties": { "cmd": { "type": "string" } },
-                "required": ["cmd"]
-            })
-        }
-        fn is_concurrency_safe(&self, _input: &serde_json::Value) -> bool {
-            true
-        }
-        async fn execute(&self, input: serde_json::Value) -> aion_types::tool::ToolResult {
-            if input.get("cmd").is_none() {
-                return aion_types::tool::ToolResult {
-                    content: "Missing cmd".to_string(),
-                    is_error: true,
-                };
-            }
-            aion_types::tool::ToolResult {
-                content: "ok".to_string(),
-                is_error: false,
-            }
-        }
-        fn category(&self) -> aion_protocol::events::ToolCategory {
-            aion_protocol::events::ToolCategory::Exec
-        }
-    }
-
-    fn make_registry_with_deferred() -> ToolRegistry {
-        let mut registry = ToolRegistry::new();
-        registry.register(Box::new(MockDeferredTool {
-            schema: json!({
-                "type": "object",
-                "properties": { "tasks": { "type": "array" } },
-                "required": ["tasks"]
-            }),
-        }));
-        registry.register(Box::new(MockNonDeferredTool));
-        registry
-    }
-
-    #[tokio::test]
-    async fn execute_single_deferred_tool_error_missing_required_appends_hint() {
-        let registry = make_registry_with_deferred();
-        let call = ContentBlock::ToolUse {
-            id: "call_1".into(),
-            name: "MockDeferred".into(),
-            input: json!({}),
-            extra: None,
-        };
-        let (result, _) = execute_single(
-            &registry,
-            &call,
-            None,
-            aion_compact::CompactionLevel::Off,
-            false,
-        )
-        .await;
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
-            assert!(is_error);
-            assert!(content.contains("Missing or invalid 'tasks' array"));
-            assert!(content.contains("ToolSearch"));
-        } else {
-            panic!("expected ToolResult");
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_single_deferred_tool_error_with_required_present_no_hint() {
-        let registry = make_registry_with_deferred();
-        // tasks is present but wrong type — tool still fails, but required field exists
-        let call = ContentBlock::ToolUse {
-            id: "call_2".into(),
-            name: "MockDeferred".into(),
-            input: json!({"tasks": "not_an_array"}),
-            extra: None,
-        };
-        let (result, _) = execute_single(
-            &registry,
-            &call,
-            None,
-            aion_compact::CompactionLevel::Off,
-            false,
-        )
-        .await;
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
-            // Tool succeeds because input.get("tasks") is Some
-            assert!(!is_error);
-            assert!(!content.contains("ToolSearch"));
-        } else {
-            panic!("expected ToolResult");
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_single_deferred_tool_success_no_hint() {
-        let registry = make_registry_with_deferred();
-        let call = ContentBlock::ToolUse {
-            id: "call_3".into(),
-            name: "MockDeferred".into(),
-            input: json!({"tasks": [{"name": "t1", "prompt": "do x"}]}),
-            extra: None,
-        };
-        let (result, _) = execute_single(
-            &registry,
-            &call,
-            None,
-            aion_compact::CompactionLevel::Off,
-            false,
-        )
-        .await;
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
-            assert!(!is_error);
-            assert_eq!(content, "ok");
-        } else {
-            panic!("expected ToolResult");
-        }
-    }
-
-    #[tokio::test]
-    async fn execute_single_non_deferred_tool_error_no_hint() {
-        let registry = make_registry_with_deferred();
-        let call = ContentBlock::ToolUse {
-            id: "call_4".into(),
-            name: "MockNonDeferred".into(),
-            input: json!({}),
-            extra: None,
-        };
-        let (result, _) = execute_single(
-            &registry,
-            &call,
-            None,
-            aion_compact::CompactionLevel::Off,
-            false,
-        )
-        .await;
-        if let ContentBlock::ToolResult {
-            content, is_error, ..
-        } = &result
-        {
-            assert!(is_error);
-            assert!(content.contains("Missing cmd"));
-            assert!(!content.contains("ToolSearch"));
-        } else {
-            panic!("expected ToolResult");
-        }
-    }
-}
+#[path = "orchestration_test.rs"]
+mod orchestration_test;
